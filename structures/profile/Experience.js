@@ -1,14 +1,13 @@
 const sql = require('sqlite');
-sql.open('./score.sqlite');
+sql.open('./data/user/userData.sqlite');
 var totalXP = 0;
 
 class Experience {
 
 	static async getTotalExperience(userID) {
-		await sql.get(`SELECT * FROM scores WHERE userId ='${userID}'`).then(row => {
+		await sql.get(`SELECT * FROM experience WHERE userId ='${userID}'`).then(row => {
 			totalXP = `${row.experience}`;
 			return totalXP;
-			console.log(totalXP);
 		})
 	}
 
