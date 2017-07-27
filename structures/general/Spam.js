@@ -10,6 +10,41 @@ var spamObject = {
 
 function newMessage(message) {
 	if (message.author.bot) return;
+	var msg = message.content
+
+	// Is the first word in message content found more than [x] times?
+	function regexEscape(str) {
+		if (str == null)
+			return;
+		return str.toString().replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+	}
+
+	function reg(input) {
+		var flags;
+		//could be any combination of 'g', 'i', and 'm'
+		flags = 'gi';
+
+		if (input == null)
+			return;
+		input = regexEscape(input);
+
+		return new RegExp('[a-zA-Z ](' + input + '){10,}', flags);
+	}
+
+	//This below code is testing how many characters in a single post, and if there are more than 17 (subject to change) then delete message.
+	//Check for spam in a single message
+	if (/(\*(\*))?(~~)?(`)?(__(\*)(\*\*)(\*\*\*))?(.)\9{17,}[^0-9]/gi.test(msg) == true) {
+		caughtSpam = true;
+		message.delete()
+		return;
+	} else if (reg(msg.match(/(\*(\*))?(~~)?(`)?(__(\*)(\*\*)(\*\*\*))?^(\S+)\s/gi)) !== undefined) {
+		if (reg(msg.match(/(\*(\*))?(~~)?(`)?(__(\*)(\*\*)(\*\*\*))?^(\S+)\s/gi)).test(msg) == true) {
+			ignoreMessage = true;
+			message.delete()
+			return;
+		}
+	}
+
         //Spam filtering enabled for this server
         var lastMessagesOfUser = spamObject.lastMessages[message.author.id];
         if (lastMessagesOfUser == null) {
