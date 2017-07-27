@@ -21,11 +21,13 @@
 const Discord = require('discord.js');
 const fs = require('fs');
 const client = new Discord.Client();
-const api = require('./keys.js');
+const api = require('./data/main/keys/keys.js');
 //This is just to make the console look fancier
 var colors = require('colors');
 const replace = require("replace");
 const maintenanceM = require('./commands/debug/maintenance.js');
+const events = require('events');
+const commandEmitter = new events.EventEmitter();
 
 global.logType = {
     debug: 0,
@@ -76,16 +78,23 @@ if (maintenanceM.maintenanceEnabled == true) {
 	maintenance = false;
 }
 
-//Database require
-const sql = require('sqlite');
-sql.open('./score.sqlite');
-
 const expletiveFilter = require('./commands/filter.js');
-const challenge = require('./commands/challenge.js');
 const doModeration = require('./commands/mod.js');
 const panicMode = require('./commands/panic.js');
 const debug = require('./commands/debug/toggle.js');
-const Experience = require('./structures/profile/Experience');
+const Experience = require('./structures/profile/Experience.js');
+const Spam = require('./structures/general/Spam.js')
+Spam.constructor(client, commandEmitter);
+const Expletive = require('./structures/general/Expletive.js')
+Expletive.constructor(client, commandEmitter);
+const Conversation = require('./structures/general/Conversation.js')
+Conversation.constructor(client, commandEmitter);
+const Challenge = require('./structures/games/Challenge.js')
+Challenge.constructor(client, commandEmitter);
+const ExperienceManager = require('./structures/experience/ExperienceManager.js')
+ExperienceManager.constructor(client, commandEmitter);
+const CommandHandler = require('./structures/general/CommandHandler.js')
+CommandHandler.constructor(client, commandEmitter);
 
 //Console
 var sudoCommand = "";
@@ -93,34 +102,14 @@ var currentGuild = "";
 var currentChannel = "";
 
 //Misc.
-var talkedRecently = [];
 var userAFK = [];
 
 //Moderation
-var lastMessages = {};
-var sameMessageCount = {};
-var botDelMessage = {};
-var doNotDelete = {};
-var caughtSwear = false;
-var caughtSpam = false;
-var caughtFastSpam = false;
+var doNotDelete = false;
 var caughtLink = false;
 var caughtKYS = false;
 var ignoreMessage = false;
 doModeration[196793479899250688] = true;
-
-//Challenges
-var health = {};
-var healLevel = {};
-var timesHealed = {};
-var missTurn = {};
-var armor = {};
-var specialAbilityUsed = {};
-var turn = "";
-var init = true;
-var badgesC = JSON.parse(fs.readFileSync('./data/challenge/equipment.json', 'utf8'));
-var userChallenge;
-
 
 async function setGame() {
 	let presence = {};
@@ -157,6 +146,7 @@ function messageChecker(oldMessage, newMessage) {
 	var msg = message.content;
 
 	if (message.guild == null) return;
+  commandEmitter.emit('newMessage', message);
 
 	exports.userAFK = userAFK;
 
@@ -170,511 +160,7 @@ function messageChecker(oldMessage, newMessage) {
 		}
 	} else {}
 
-	//✦ Experience handler, including levels, badges and experience gained per message. ✦
-	message.guild.fetchMember(message.author).then(function(member) {
-		const filter = message => message.author.id === member.user.id && member.user.bot == false;
-		message.channel.fetchMessages({
-			limit: 100
-		}).then(messages => {
-			if (message.author.bot)
-				return;
-			if (message.channel.type !== 'text')
-				return;
-			if (message.channel.id == 325540027972976650)
-				return;
 
-			sql.get(`SELECT * FROM scores WHERE userId ='${message.author.id}'`).then(row => {
-
-				if (!row) {
-					sql.run('INSERT INTO scores (userId, experience, level) VALUES (?, ?, ?)', [message.author.id, 1, 0]);
-					log("Added a new user to experience database.", logType.info);
-				} else {
-					let curLevel = Math.floor(0.1 * Math.sqrt(row.experience)) + 1;
-					if (curLevel > row.level) {
-						row.level = curLevel;
-						sql.run(`UPDATE scores SET experience = ${row.experience + 1}, level = ${row.level} WHERE userId = ${message.author.id}`);
-					}
-					// Checks if they have talked recently
-					if (talkedRecently.includes(message.author.id)) {
-						// You can change the nature of the cool down by changing the return to something else.
-						return;
-					} else {
-
-						sql.get(`SELECT * FROM scores WHERE userId ='${message.author.id}'`).then(row => {
-							let rand = Math.round(Math.random() * (11 - 4) + 4);
-							sql.run(`UPDATE scores SET experience = ${row.experience + rand} WHERE userId = ${message.author.id}`);
-							log("Added " + rand + " experience to " + message.author.username + ".", logType.info);
-						})
-
-						// Adds the user to the array so that they can't talk for 65 seconds
-						talkedRecently.push(message.author.id);
-						client.setTimeout(() => {
-							const index = talkedRecently.indexOf(message.author.id);
-							// Removes the user from the array after 65 seconds
-							talkedRecently.splice(index, 1);
-						}, 65000);
-					}
-				}
-			}).catch(() => {
-				console.error;
-				sql.run('CREATE TABLE IF NOT EXISTS scores (userId TEXT, experience INTEGER, level INTEGER)').then(() => {
-					sql.run('INSERT INTO scores (userId, experience, level) VALUES (?, ?, ?)', [message.author.id, 1, 0]);
-				});
-			});
-
-			sql.get(`SELECT * FROM badges WHERE userId ='${message.author.id}'`).then(row => {
-				if (!row) {
-					sql.run('INSERT INTO badges (userId, developer, active, moderator, essaywriter, subscriber, streamer, xbt, friendship, photographer) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [message.author.id, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-				}
-				// Check if message author is zBlake:
-				if (message.author.id == 246574843460321291) {
-					sql.run(`UPDATE badges SET developer = 1 WHERE userId = ${message.author.id}`);
-				}
-
-				// If message author has a moderator role:
-				if (member.roles.find("name", "Fleece Police")) {
-					sql.run(`UPDATE badges SET moderator = 1 WHERE userId = ${message.author.id}`);
-				}
-
-				// If message author is one of the names below (active badge):
-				if (member.id == 246574843460321291 || member.id == 284551391781978112 || member.id == 184050823326728193 || member.id == 246129294785380353 || member.id == 224472981571633153 || member.id == 213776985581813760 || member.id == 213776985581813760 || member.id == 196792235654774784) { // add id's here if active
-					sql.run(`UPDATE badges SET active = 1 WHERE userId = ${message.author.id}`);
-				}
-
-				// If message author has the subscriber role:
-				if (member.roles.find("name", "Subscriber")) {
-					sql.run(`UPDATE badges SET subscriber = 1 WHERE userId = ${message.author.id}`);
-				}
-
-				// If message author has the Xail Bot Testing role:
-				if (member.roles.find("name", "Xail Bot Testing")) {
-					sql.run(`UPDATE badges SET xbt = 1 WHERE userId = ${message.author.id}`);
-				}
-				// If message author has 100/100 on the photographer progress badge:
-				if (badgecompletion[message.author.id].photographer > 99) {
-					sql.run(`UPDATE badges SET photographer = 1 WHERE userId = ${message.author.id}`);
-				}
-
-				// If message author is lvl 10 or higher:
-				sql.get(`SELECT * FROM scores WHERE userId ='${member.id}'`).then(row => {
-				if (`${row.experience} > 2500`) {
-					sql.run(`UPDATE badges SET essaywriter = 1 WHERE userId = ${message.author.id}`);
-				}
-			});
-
-				// If message author is Xailran:
-				if (member.id == 196792235654774784) {
-					sql.run(`UPDATE badges SET streamer = 1 WHERE userId = ${message.author.id}`);
-				}
-
-			}).catch(() => {
-				console.error;
-				sql.run('CREATE TABLE IF NOT EXISTS badges (userId TEXT, developer INTEGER, active INTEGER, moderator INTEGER, essaywriter INTEGER, subscriber INTEGER, streamer INTEGER, xbt INTEGER, friendship INTEGER, photographer INTEGER)').then(() => {
-					sql.run('INSERT INTO badges (userId, developer, active, moderator, essaywriter, subscriber, streamer, xbt, friendship, photographer) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [message.author.id, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-				});
-			});
-
-			sql.get(`SELECT * FROM badgeprogress WHERE userId ='${message.author.id}'`).then(row => {
-				if (!row) {
-					sql.run('INSERT INTO badgeprogress (userId, photographer) VALUES (?, ?)', [message.author.id, 0]);
-				}
-			//If user posts a picture in #photos, add 1 to photographer badge:
-			sql.get(`SELECT * FROM badgeprogress WHERE userId ='${member.id}'`).then(row => {
-			if (message.attachments.size > 0) {
-				sql.run(`UPDATE badges SET photographer = ${row.photographer + 1} WHERE userId = ${message.author.id}`);
-			}
-		})
-		}).catch(() => {
-			console.error;
-			sql.run('CREATE TABLE IF NOT EXISTS badgeprogress (userId TEXT, photographer INTEGER)').then(() => {
-				sql.run('INSERT INTO badgeprogress (userId, photographer) VALUES (?, ?)', [message.author.id, 0]);
-			});
-		});
-
-			})
-		})
-
-	//CHALLENGE
-	if (challenge.startedChallenge && message.channel.name == challenge.channel) {
-		// Initialization variables
-		if (init) {
-		health[challenge.author] = 100;
-		health[challenge.enemy] = 100;
-		armor[challenge.author] = 0;
-		armor[challenge.enemy] = 0;
-		healLevel[challenge.author] = 1;
-		healLevel[challenge.enemy] = 1;
-		specialAbilityUsed[challenge.enemy.id] = false;
-		specialAbilityUsed[challenge.author.id] = false;
-		timesHealed[challenge.enemy.id] = 1
-		timesHealed[challenge.author.id] = 1
-		turn = challenge.author;
-		init = false;
-		}
-
-		// Only check for messages that start with attack, defend, heal or end.
-		if (msg == "attack" || msg == "defend" || msg == "heal" || msg == "end" || msg == "special") {
-		message.delete();
-		userChallenge = badgesC[turn.id];
-		// Check for turn
-		if (message.author.id != turn.id) {
-			message.reply(":crossed_swords: **CHALLENGE**: It is not your turn!");
-			return;
-		}
-
-		message.channel.send(missTurn[turn.id]);
-
-		if (missTurn[turn.id] == true) {
-			message.channel.send(":crossed_swords: **CHALLENGE**: " + turn + " missed their turn.");
-			missTurn[turn.id] = false;
-			//END TURN
-			if (turn == challenge.enemy) {
-			turn = challenge.author
-			} else {
-			turn = challenge.enemy
-			}
-
-			if (userChallenge.weapon == "gold") {
-			message.channel.send(":crossed_swords: **CHALLENGE**: It is " + turn + "'s turn.\nWhat do you want to do? `attack` `defend` `heal` `special` `end`");
-			} else {
-			message.channel.send(":crossed_swords: **CHALLENGE**: It is " + turn + "'s turn.\nWhat do you want to do? `attack` `defend` `heal` `end`");
-			}
-
-			return;
-		}
-
-		if (msg.toLowerCase().startsWith("attack")) {
-			let damage = Math.round(Math.random() * (27 - 7) + 7) - armor[challenge.enemy];
-			let miss = Math.round(Math.random() * (3 - 1) + 1)
-
-			if (turn == challenge.enemy) {
-			damage = Math.round(Math.random() * (27 - 7) + 7) - armor[challenge.author];
-
-			//1/3 chance to miss
-			if (miss != 3) {
-			//Deduct health
-			health[challenge.author] = health[challenge.author] - damage;
-
-			//Check if user has defeated enemy
-			if (health[challenge.author] < 1) {
-			var winner = challenge.enemy;
-			var loser = challenge.author;
-			var wowword = "";
-			var verb = "";
-			var noun = "";
-
-			// WOW WORD
-			switch (Math.floor(Math.random() * 1000) % 6) {
-						case 0:
-							wowword = "Holy cow!"
-							break;
-						case 1:
-							wowword = "Wow!"
-							break;
-						case 2:
-							wowword = "I did not expect that!"
-							break;
-						case 3:
-							wowword = "God damn!"
-							break;
-						case 4:
-							wowword = "Oh my god!"
-							break;
-						case 5:
-							wowword = "No way!"
-							break;
-			}
-
-			// NOUN
-			switch (Math.floor(Math.random() * 1000) % 5) {
-						case 0:
-							noun = "just"
-							break;
-						case 1:
-							noun = "totally"
-							break;
-						case 2:
-							noun = "kinda"
-							break;
-						case 3:
-							noun = "100%"
-							break;
-						case 4:
-							noun = "absolutely"
-						break;
-			}
-
-			// VERB
-			switch (Math.floor(Math.random() * 1000) % 11) {
-						case 0:
-							verb = "annihilated"
-							break;
-						case 1:
-							verb = "knocked out"
-							break;
-						case 2:
-							verb = "flogged"
-							break;
-						case 3:
-							verb = "destroyed"
-							break;
-						case 4:
-							verb = "crushed"
-							break;
-						case 5:
-							verb = "ruined"
-							break;
-						case 6:
-							verb = "eradicated"
-							break;
-						case 7:
-							verb = "dismantled"
-							break;
-						case 8:
-							verb = "wiped out"
-							break;
-						case 9:
-							verb = "erased"
-							break;
-						case 10:
-							verb = "squashed"
-							break;
-			}
-			message.channel.send(":crossed_swords: **CHALLENGE**: " + wowword + " " + winner + " " + noun + " " + verb + " " + loser + "! Good fight!")
-			return;
-			}
-
-			message.channel.send(":crossed_swords: **CHALLENGE**: " + challenge.author + " took **" + damage + "** damage. They now have **" + health[challenge.author] + " HP**.")
-			} else {
-			message.channel.send(":crossed_swords: **CHALLENGE**: " + challenge.author + " dodged " + challenge.enemy + "'s attack!");
-			}
-
-			} else {
-			damage = Math.round(Math.random() * (27 - 7) + 7) - armor[challenge.enemy];
-
-			//1/3 chance to miss
-			if (miss != 3) {
-			//Deduct health
-			health[challenge.enemy] = health[challenge.enemy] - damage;
-
-			//Check if user has defeated enemy
-			if (health[challenge.enemy] < 1) {
-			var winner = challenge.author;
-			var loser = challenge.enemy;
-			var wowword = "";
-			var verb = "";
-			var noun = "";
-
-			// WOW WORD
-			switch (Math.floor(Math.random() * 1000) % 6) {
-						case 0:
-							wowword = "Holy cow!"
-							break;
-						case 1:
-							wowword = "Wow!"
-							break;
-						case 2:
-							wowword = "I did not expect that!"
-							break;
-						case 3:
-							wowword = "God damn!"
-							break;
-						case 4:
-							wowword = "Oh my god!"
-							break;
-						case 5:
-							wowword = "No way!"
-							break;
-			}
-
-			// NOUN
-			switch (Math.floor(Math.random() * 1000) % 4) {
-						case 0:
-							noun = "just"
-							break;
-						case 1:
-							noun = "totally"
-							break;
-						case 2:
-							noun = "kinda"
-							break;
-						case 3:
-							noun = "100%"
-							break;
-			}
-
-			// VERB
-			switch (Math.floor(Math.random() * 1000) % 11) {
-						case 0:
-							verb = "annihilated"
-							break;
-						case 1:
-							verb = "knocked out"
-							break;
-						case 2:
-							verb = "absolutely flogged"
-							break;
-						case 3:
-							verb = "destroyed"
-							break;
-						case 4:
-							verb = "crushed"
-							break;
-						case 5:
-							verb = "ruined"
-							break;
-						case 6:
-							verb = "eradicated"
-							break;
-						case 7:
-							verb = "dismantled"
-							break;
-						case 8:
-							verb = "wiped out"
-							break;
-						case 9:
-							verb = "erased"
-							break;
-						case 10:
-							verb = "squashed"
-							break;
-			}
-			message.channel.send(":crossed_swords: **CHALLENGE**: " + wowword + " " + winner + " " + noun + " " + verb + " " + loser + "! Good fight!");
-			return;
-			}
-			message.channel.send(":crossed_swords: **CHALLENGE**: " + challenge.enemy + " took **" + damage + "** damage. They now have **" + health[challenge.enemy] + " HP**.")
-			} else {
-			message.channel.send(":crossed_swords: **CHALLENGE**: " + challenge.enemy + " dodged " + challenge.author + "'s attack!");
-			}
-			}
-
-			//END TURN
-			if (turn == challenge.enemy) {
-			turn = challenge.author
-			} else {
-			turn = challenge.enemy
-			}
-		}
-
-		if (msg.toLowerCase().startsWith("defend")) {
-			let defense = Math.round(Math.random() * (5 - 2) + 2)
-
-			if (turn == challenge.enemy) {
-			if (armor[challenge.enemy] > 7) {
-				message.reply(":no_entry_sign: **NOPE**: You are at the maximum defense level!");
-				armor[challenge.enemy] = 7;
-				return;
-			}
-			armor[challenge.enemy] = armor[challenge.enemy] + defense;
-			message.channel.send(":crossed_swords: **CHALLENGE**: " + challenge.enemy + " equiped some armor. They now take **" + defense + " HP** less damage for every attack.")
-			} else {
-			if (armor[challenge.author] > 7) {
-				message.reply(":no_entry_sign: **NOPE**: You are at the maximum defense level!");
-				armor[challenge.author] = 7;
-				return;
-			}
-			armor[challenge.author] = armor[challenge.author] + defense;
-			message.channel.send(":crossed_swords: **CHALLENGE**: " + challenge.author + " equiped some armor. They now take **" + defense + " HP** less damage for every attack.")
-			}
-
-			//END TURN
-			if (turn == challenge.enemy) {
-			turn = challenge.author
-			} else {
-			turn = challenge.enemy
-			}
-		}
-
-		if (msg.toLowerCase().startsWith("heal")) {
-			if (timesHealed[turn.id] < 4) {
-			let healAmount = Math.round(Math.random() * (12 - 5) + 5)
-			timesHealed[turn.id] = timesHealed[turn.id] + 1
-
-			if (turn == challenge.enemy) {
-
-			// HEAL POTION LEVEL HANDLING
-			if (healLevel[challenge.enemy] == 1) {
-			healAmount = Math.round(Math.random() * (12 - 5) + 5)
-			} else if (healLevel[challenge.enemy] == 2) {
-			healAmount = Math.round(Math.random() * (15 - 8) + 8)
-			} else if (healLevel[challenge.enemy] == 3) {
-			healAmount = Math.round(Math.random() * (18 - 11) + 11)
-			}
-
-			health[challenge.enemy] = health[challenge.enemy] + healAmount;
-			message.channel.send(":crossed_swords: **CHALLENGE**: " + challenge.enemy + " drank a **level " + healLevel[challenge.enemy] + "** health potion. They healed **" + healAmount + " HP**, bringing them up to **" + health[challenge.enemy] + " HP**.");
-			} else {
-
-			// HEAL POTION LEVEL HANDLING
-			if (healLevel[challenge.author] == 1) {
-			healAmount = Math.round(Math.random() * (12 - 5) + 5)
-			} else if (healLevel[challenge.author] == 2) {
-			healAmount = Math.round(Math.random() * (15 - 8) + 8)
-			} else if (healLevel[challenge.author] == 3) {
-			healAmount = Math.round(Math.random() * (18 - 11) + 11)
-			}
-
-			health[challenge.author] = health[challenge.author] + healAmount;
-			message.channel.send(":crossed_swords: **CHALLENGE**: " + challenge.author + " drank a **level " + healLevel[challenge.author] + "** health potion. They healed **" + healAmount + " HP**, bringing them up to **" + health[challenge.author] + " HP**.");
-			}
-
-			//END TURN
-			if (turn == challenge.enemy) {
-			turn = challenge.author
-			} else {
-			turn = challenge.enemy
-			}
-			} else {
-			message.reply(":no_entry_sign: **NOPE**: You can't heal anymore.");
-			return;
-			}
-		}
-
-
-
-		if (msg.toLowerCase().startsWith("special")) {
-			if (userChallenge.weapon == "gold") {
-			if (specialAbilityUsed[turn.id] == false) {
-			if (turn == challenge.enemy) {
-				health[challenge.enemy] = health[challenge.enemy] + 20;
-				missTurn[challenge.author.id] = true;
-				message.channel.send(":crossed_swords: **CHALLENGE**: " + challenge.enemy + " used their special ability: **Gold Frost**! " + challenge.enemy + " gained **20 HP** and " + challenge.author + " will miss their next turn.");
-				specialAbilityUsed[challenge.enemy.id] = true;
-			} else {
-				health[challenge.author] = health[challenge.author] + 20;
-				missTurn[challenge.enemy.id] = true;
-				message.channel.send(":crossed_swords: **CHALLENGE**: " + challenge.author + " used their special ability: **Gold Frost**! " + challenge.author + " gained **20 HP** and " + challenge.enemy + " will miss their next turn.");
-				specialAbilityUsed[challenge.author.id] = true;
-			}
-			} else {
-			message.reply(":no_entry_sign: **NOPE**: You've already used your special ability.");
-			}
-			} else {
-			message.reply(":no_entry_sign: **NOPE**: You don't have a special ability to use.");
-			}
-			//END TURN
-			if (turn == challenge.enemy) {
-			turn = challenge.author
-			} else {
-			turn = challenge.enemy
-			}
-		}
-
-		if (userChallenge.weapon == "gold") {
-		message.channel.send(":crossed_swords: **CHALLENGE**: It is " + turn + "'s turn.\nWhat do you want to do? `attack` `defend` `heal` `special` `end`");
-		} else {
-		message.channel.send(":crossed_swords: **CHALLENGE**: It is " + turn + "'s turn.\nWhat do you want to do? `attack` `defend` `heal` `end`");
-		}
-		return;
-		}
-
-	}
-
-
-	// If botDelMessage has no value, init to true.
-	if (botDelMessage == null) {
-		botDelMessage = true;
-	}
 
 	// If doModeration has no value, init to true.
 	if (doModeration.enabled == null || undefined) {
@@ -684,16 +170,6 @@ function messageChecker(oldMessage, newMessage) {
 	// If expletiveFilter has no value, init to true.
 	if (expletiveFilter.enabled == null || undefined) {
 		expletiveFilter.enabled = true;
-	}
-
-	// If botDelMessage is true and an suitable message is found:
-	if (botDelMessage) {
-		if (message.author.id == 303017211457568778 && doNotDelete == false) {
-			console.log(colors.yellow("▲ Bot is about to delete: " + colors.grey(message)));
-			message.delete({
-				timeout: 10000
-			});
-		}
 	}
 
 	// If panicMode has no value, init to false.
@@ -743,143 +219,13 @@ function messageChecker(oldMessage, newMessage) {
 				}
 			}
 
-			// If a user is spamming the same message multiple times, rate limit.
-			if (lastMessages[message.author.id] != msg) {
-				sameMessageCount[message.author.id] = 0;
-			}
-
-			lastMessages[message.author.id] = msg
-			sameMessageCount[message.author.id] += 1;
-
-			if (message.attachments.size > 0) {
-				sameMessageCount[message.author.id] = 0;
-			}
-
-			if (lastMessages[message.author.id] == msg && sameMessageCount[message.author.id] == 6) {
-				var auth = message.author;
-				client.channels.get("229575537444651009").send(":warning: **SPAM:** <@" + auth.id + "> was spamming on " + message.channel.name + ".");
-				doNotDelete = false;
-				message.reply("Quite enough of this. I'm not warning you any more. A notification has been sent to the mods.");
-				caughtSpam = true;
-				message.delete();
-			} else if (lastMessages[message.author.id] == msg && sameMessageCount[message.author.id] > 6) {
-				ignoreMessage = true;
-				message.delete();
-			} else if (lastMessages[message.author.id] == msg && sameMessageCount[message.author.id] > 3) {
-				ignoreMessage = true;
-				doNotDelete = false;
-				log("▲ Spam limits activated for " + message.author.tag, logType.info);
-				switch (Math.floor(Math.random() * 1000) % 5) {
-					case 0:
-						message.reply("Well... We all heard you.");
-						break;
-					case 1:
-						message.reply("Stop typing the same thing! You're like a broken record!");
-						break;
-					case 2:
-						message.reply("Hmm... Not sure if you'd actually say the same thing more than three times in public.");
-						break;
-					case 3:
-						message.reply("Is that the only phrase you know? Can you try typing something else?");
-						break;
-					case 4:
-						message.reply("Pollution is not the solution, my friend.");
-						break;
-				}
-
-				message.delete();
-			}
-			}
-
-			// Check message content for the words seen in exp or dxp, and if one or more are found, delete the message.
-			// Expletive filter
-			if (expletiveFilter.enabled) {
-				var exp = msg.search(/(\b|\s|^|.|\,|\ )(fuck|penis|cunt|faggot|fark|fck|fag|wank|nigger|nigga|bastard|bitch|asshole|dick|d1ck|d!ck|b1tch|b!tch|blowjob|cock|nigg|fuk|cnut|pussy|c0ck|retard|porn|stfu)(\b|\s|$|.|\,|\ )/i);
-				var dxp = msg.search(/(\b|\s|^|.|\,|\ )(cunt|b1tch|b!tch|bitch|cnut)(\b|\s|$|.|\,|\ )/i);
-
-				if (exp != -1) { //Gah! They're not supposed to say that!
-					if (dxp != -1) { //extra bad word!
-						log("▲ Expletive (level 2) caught in message by " + message.author.tag, logType.info);
-						caughtSwear = true;
-					}
-
-					log("▲ Expletive (level 2) caught in message by " + message.author.tag, logType.info);
-					switch (Math.floor(Math.random() * 1000) % 21) {
-						case 0:
-							message.reply("I'm very disappointed in you. :angry:");
-							break;
-						case 1:
-							message.reply("Hey! Let's not have any of that please.");
-							break;
-						case 2:
-							message.reply("No thanks.");
-							break;
-						case 3:
-							message.reply("Cool. Now let's not forget the rules.");
-							break;
-						case 4:
-							message.reply("If I'm not going to delete it, a mod will. Let's save them some work.");
-							break;
-						case 5:
-							message.reply("Hey! That was a swear! No!");
-							break;
-						case 6:
-							message.reply("This situation calls for some passive resistance!");
-							break;
-						case 7:
-							message.reply("Hey! Just cool it.");
-							break;
-						case 8:
-							message.reply("Watch your mouth.");
-							break;
-						case 9:
-							message.reply("I can't believe you've done this...");
-							break;
-						case 10:
-							message.reply("Did you have to say that?");
-							break;
-						case 11:
-							message.reply("You can't say that man!");
-							break;
-						case 12:
-							message.reply("You've triggered me!");
-							break;
-						case 13:
-							message.reply("Woah! Calm down buddy!");
-							break;
-						case 14:
-							message.reply("Won't somebody please just think about the children?");
-							break;
-						case 15:
-							message.reply("Was that necessary?");
-							break;
-						case 16:
-							message.reply("I think you might need to have a quick look at the rules again.");
-							break;
-						case 17:
-							message.reply("Gah! You can't say that!");
-							break;
-						case 18:
-							message.reply("You can't use those words here.");
-							break;
-						case 19:
-							message.reply("If you're going to type that, why not get out a pen and paper and do it yourself?");
-							break;
-						case 20:
-							message.reply("https://cdn.discordapp.com/attachments/325540027972976650/333031862807166977/oGPoUBPq_CTMvEiSVSFVruRc1xMozwglHWxYIrGzUk.png");
-							break;
-					}
-					doNotDelete = false;
-					message.delete();
-					return;
-				}
 			}
 
 			// Special case if message content contains "kill yourself".
 			if (message.author.id != 303017211457568778 && msg.search(/\b(kys|kill yourself|k-y-s|k y s|k ys|k ys|k i l l yourself|k i l l y o u r s e l f|k-ys|ky-s|kill y o u r s e l f|kill ys|k yourself|killyourself|k y o u r s e l f|kill urself|k.y.s.|k-y-s.|ky-s.|k-ys.|k y s.|ky s.|k ys.)\b/i) != -1) {
 				var auth = message.author;
 				caughtKYS = true;
-				message.reply("Right, we don't appreciate that here. A notification has been sent to the mods.");
+				message.reply("Right, we don't appreciate that here.");
 				message.delete();
 			}
 
@@ -896,273 +242,20 @@ function messageChecker(oldMessage, newMessage) {
 						caughtLink = true;
 						log("▲ Unapproved link caught in message by " + message.author.tag, logType.info);
 						message.delete();
-						switch (Math.floor(Math.random() * 1000) % 6) {
-							case 0:
-								message.reply("I've replaced your link with a not-so-link-like link: click here");
-								break;
-							case 1:
-								message.reply("Whatever that link was... I hope it didn't contain some bad stuff...");
-								break;
-							case 2:
-								message.reply("I don't know man, the internet is a dangerous place.");
-								break;
-							case 3:
-								message.reply("Cool. Now let's not forget the rules.");
-								break;
-							case 4:
-								message.reply("If I'm not going to delete it, a mod will. Let's save them some work.");
-								break;
-							case 5:
-								message.reply("We don't want to download your FREE RAM.");
-								break;
-						}
+            fs.readFile('./data/main/filter/linkCaughtMessage.txt', function(err, data) {
+          	if(err) throw err;
+          	data = data.toString();
+          	let fileContentLines = data.split( '\n' );
+          	let randomLineIndex = Math.floor( Math.random() * fileContentLines.length );
+          	let randomLine = fileContentLines[ randomLineIndex ];
+        		message.reply(randomLine);
+            })
 						return;
 					}
 				}
 			}
 		}
-
-	// Start a conversation with the bot.
-	if (message.mentions !== null && message.mentions.users !== null && message.author.bot == false) {
-		doNotDelete = true;
-		// If the message content starts with a mention to Xail Bot, execute conversation code.
-		if (msg.toLowerCase().startsWith("<@303017211457568778>")) {
-			if (message.channel.name == "bot_testing") {}
-
-			if (message.channel.name !== "other_stuff" && message.channel.name !== "bot_testing" && msg.toLowerCase().startsWith("mod:") !== true) {
-				doNotDelete = false;
-				message.delete();
-				message.channel.send(":no_entry_sign: **NOPE**: You need to be in <#297684608940769283> if you want to chat with me.");
-				return;
-			}
-
-			if (msg.toLowerCase().includes("stop") || (msg.toLowerCase().includes("shut") && msg.toLowerCase().includes("up"))) {
-
-				switch (Math.floor(Math.random() * 1000) % 3) {
-					case 0:
-						message.reply(":no_entry_sign: **NOPE**: I shall talk as much as I like.");
-						break;
-					case 1:
-						message.reply(":no_entry_sign: **NOPE**: You shu... I'd better not say that actually.");
-						break;
-					case 2:
-						message.reply(":no_entry_sign: **NOPE**: Just no.");
-						break;
-				}
-				//CONVERSATION COMMANDS
-			} else if (msg.toLowerCase().includes("fuck you") || msg.toLowerCase().includes("fuck off") || msg.toLowerCase().includes("shit")) {
-				message.reply("<:xailFish:303393341704503297>");
-			} else if (msg.toLowerCase().includes("how") && msg.toLowerCase().includes("you")) {
-				message.reply("I'm doing OK I suppose.");
-			} else if (msg.toLowerCase().includes("yes") || msg.toLowerCase().includes("yep") || msg.toLowerCase().includes("right?") || msg.toLowerCase().includes("isn't it?")) {
-				message.reply("Well, I suppose so.");
-			} else if (msg.toLowerCase().includes("nah") || msg.toLowerCase().includes("nope")) {
-				message.reply("I guess not.");
-			} else if (msg.toLowerCase().includes("do you")) {
-				message.reply("Erm... Maybe? I dunno.");
-			} else if (msg.toLowerCase().includes("what is")) {
-				message.reply("It's probably 42.");
-			} else if (msg.toLowerCase().includes("donate")) {
-				message.reply(":information_source: You can donate to Xailran by clicking this link: https://twitch.streamlabs.com/xailran#/ \n:no_entry_sign: Please note that you are absolutely not required to donate to Xail. All donations, no matter the size, are massively welcomed though.");
-			} else if (msg.toLowerCase().includes("are you")) {
-				message.reply("If that's what you want, okay.");
-			} else if (msg.toLowerCase().includes("why is")) {
-				message.reply("I don't know, it's probably because of something Xail did.");
-			} else if (msg.toLowerCase().includes("can i")) {
-				message.reply("It's up to you, mate.");
-			} else if (msg.toLowerCase().includes("hello") || msg.toLowerCase().includes("hey") || msg.toLowerCase().includes("howdy") || msg.toLowerCase().endsWith("hi")) {
-
-				switch (Math.floor(Math.random() * 1000) % 6) {
-					case 0:
-						message.reply("Is it me you're looking for?");
-						break;
-					case 1:
-						message.reply("Hey there! If you ever need help using Xail Bot, just type `+help`!");
-						break;
-					case 2:
-						message.reply("Hello there!");
-						break;
-					case 3:
-						message.reply("Woah, hey there " + message.author.username + "! Didn't know you were here!");
-						break;
-					case 4:
-						message.channel.send("A wild " + message.author + " appeared!");
-						break;
-				}
-
-				//USER-SPECIFIC COMMANDS
-			} else if (msg.toLowerCase().includes("xail") || msg.toLowerCase().includes("xailran")) {
-				message.reply("Did you know I am actually based off of that guy?");
-			} else if (msg.toLowerCase().includes("zblake") || msg.toLowerCase().includes("blake")) {
-				message.reply("Oh, I know that guy! He's an absolute legend.");
-			} else if (msg.toLowerCase().includes("puma") || msg.toLowerCase().includes("pumacatrun2")) {
-				switch (Math.floor(Math.random() * 1000) % 4) {
-					case 0:
-						message.reply("same");
-						break;
-					case 1:
-						message.reply(":^)))))))))");
-						break;
-					case 2:
-						message.reply("same u nerd :^)))");
-						break;
-					case 3:
-						message.reply("puma exposed");
-						break;
-				}
-			} else if (msg.toLowerCase().includes("rocker")) {
-				switch (Math.floor(Math.random() * 1000) % 4) {
-					case 0:
-						if (message.author.id == 213776985581813760) {
-							switch (Math.floor(Math.random() * 1000) % 3) {
-								case 0:
-									message.author.send("IMMA FITEACHU LETS GO")
-									break;
-								case 1:
-									message.author.send("you're a derp")
-									break;
-								case 2:
-									message.author.send("https://www.youtube.com/watch?v=4ZaYk7X9KAU\nTHE MUUUSIICCC <3 <3 <3")
-									break;
-							}
-						}
-						message.reply("rocker is smol");
-						break;
-					case 1:
-						message.reply("i like yo face " + message.author);
-						break;
-					case 2:
-						message.reply("boi.");
-						break;
-					case 3:
-						message.reply("*mew mew mew mew mew mew mew mew mew mew MEEWW*");
-						break;
-				}
-				//MEME COMMANDS
-			} else if (msg.toLowerCase() == "boy i sure do wish i could give money to xailran, he is just such a smart, funny guy that i want to give him funds to help his channel.") {
-				message.reply("That is a very specific request you have there!");
-			} else if (msg.toLowerCase().includes("+") || msg.toLowerCase().includes("divided") || msg.toLowerCase().includes("-") || msg.toLowerCase().includes("plus") || msg.toLowerCase().includes("subtract") || msg.toLowerCase().includes("minus") || msg.toLowerCase().includes("times") || msg.toLowerCase().includes("*") || msg.toLowerCase().includes("/") || msg.toLowerCase().includes("=")) {
-				message.reply("Sorry, I don't know what it is. Go ask Xail, he'd probably know.");
-			} else if (msg.toLowerCase().includes("shut down") || msg.toLowerCase().includes("shut off") || msg.toLowerCase().includes("turn off") || msg.toLowerCase().includes("go away") || msg.toLowerCase().includes("shutdown")) {
-				message.reply(":white_check_mark: XailBot is now exiting. Goodbye!");
-				message.reply("Haha, just kidding.");
-			} else if (msg.toLowerCase().includes("but first")) {
-				message.reply("We need to talk about parallel universes.");
-			}
-		}
-	}
-
-	// AUTO RESPONSES:
-	//
-	if (msg == "pizza stream") {
-		message.reply("The Pizza of Horror! Toppings: http://prnt.sc/dpki7o")
-	} else if (msg == "five survivors") {
-		message.reply("https://cdn.discordapp.com/attachments/247302759706132480/251236486131875841/20161118225900_1.jpg")
-	} else if (msg == "church of the rainbow sheep") {
-		message.reply("Do you have an idea for its history, and adding detail? Please, message Xailran! http://www.steamcommunity.com/groups/churchrainbowsheep")
-	} else if (msg == "praise the sheep") {
-		message.reply("All hail the rainbow sheep!")
-	} else if (msg == "praise the rain") {
-		message.reply("Rain = water. Water + Light = refraction. Refraction = Rainbow. Rain is confirmed sheep")
-	} else if (msg == "praise the sun") {
-		message.reply("The sun provides light. Light = Rainbow. Sun is confirmed Sheep")
-	} else if (msg == "praise the rainbow") {
-		message.reply("For the rainbow!!!")
-	} else if (msg == "pizza dwight") {
-		message.reply("Pizza Dwight shenanigans are what keep me going! http://puu.sh/s7m0Z/28cf18bcbc.png")
-	} else if (msg == "cheap games") {
-		message.reply("You like games? Of course you do! Want to save money? Who doesn't! Follow this link to get a discount off your first order, and to support Xailran at the same time! (He says thanks!) https://greenmangaming.mention-me.com/m/ol/mhm-f386ad9753 Have fun!")
-	}
-	//
-
-	// Command handler for bot, mod and debug commands.
-	if (msg.toLowerCase().startsWith("+")) {
-
-		//Un-comment to activate Lockdown Mode. 	return message.channel.send(":no_entry_sign: **EMERGENCY**: *Xail Bot* has temporarily been placed in **LOCKDOWN MODE**. Learn more about why this has happened here: https://github.com/zBlakee/Xail-Bot/wiki/Lockdown-Mode");
-		var command = msg.substr(1).split(" ").slice(0, 1);
-		var args = msg.split(" ").slice(1);
-
-		exports.commandIssuer = message.author.id;
-		log(message.author.username + " issued command " + command, logType.info);
-
-		try {
-			let commandFile = require(`./commands/${command}.js`);
-			// ACE prevention
-			if (command.toString().toLowerCase().includes(".") || command.toString().toLowerCase().includes("/") || command.toString().toLowerCase().includes("moderator") || command.toString().toLowerCase().includes("debug")) {
-				message.reply(":no_entry_sign: **NICE TRY**: Don't even try that buddy.");
-		} else if (!message.member.roles.find("name", "Fleece Police")) {
-			// If command is a moderator command
-			if (command == "mod" || command == "filter" || command == "rm" || command == "uinfo" || command == "warn" || command == "ban" || command == "softban" || command == "mute" || command == "say" || command == "permit" || command == "setgame" || command == "reboot" || command == "cancel") {
-			message.reply(':no_entry_sign: **NOPE:** What? You\'re not a moderator! Why would you be allowed to type that!?');
-			} else {
-			commandFile.run(client, message, args);
-			}
-		} else {
-			commandFile.run(client, message, args);
-			}
-		} catch (err) {
-			// ACE prevention
-			if (command.toString().toLowerCase().includes(".") || command.toString().toLowerCase().includes("/") || command.toString().toLowerCase().includes("moderator") || command.toString().toLowerCase().includes("debug")) {
-				message.reply(":no_entry_sign: **NICE TRY**: Don't even try that buddy.");
-			}
-				log(err.stack, logType.warning);
-			}
-	}
-
-	// Debug command handler
-	if (msg.toLowerCase().startsWith("%")) {
-		if (message.member.roles.find("name", "Admin") || message.member.roles.find("name", "Head of the Flock") || message.member.roles.find("name", "XailBot")) {
-			var command = msg.substr(1).split(" ").slice(0, 1);
-			var args = msg.split(" ").slice(1);
-
-			log(message.author.username + " issued debug command " + command, logType.info);
-
-			try {
-				let commandFile = require(`./commands/debug/${command}.js`);
-				if (message.author.bot) {
-					commandFile.run(client, message, args);
-					return;
-				}
-
-				if (command == "setexp" || command == "maintenance" || command == "warn" && message.author.bot == false) {
-					message.reply(":lock: **INSUFFICIENT PERMISSIONS**: *" + command + "* requires sudo mode to be ran. Type `sudo` in the console to run this command with administrator privileges.");
-					sudoCommand = message.content
-					return;
-			} else {
-				commandFile.run(client, message, args);
-			}
-			} catch (err) {
-				log(err.stack, logType.warning);
-			}
-		} else {
-			doNotDelete = false;
-			message.reply(':no_entry_sign: **NOPE:** What? You\'re not an administrator! Why would you be allowed to type that!?');
-			message.delete();
-		}
-	}
-
-	// If a command is deprecated, handle command using disabled:
-	if (msg.toLowerCase().startsWith("disabled:")) {
-		if (message.member.roles.find("name", "Admin") || message.member.roles.find("name", "Head of the Flock")) {
-			var command = msg.substr(9).split(" ").slice(0, 1);
-			var args = msg.split(" ").slice(1);
-
-			log(message.author.username + " issued disabled command " + command, logType.info);
-
-			try {
-				let commandFile = require(`./commands/disabled/${command}.js`);
-				commandFile.run(client, message, args);
-			} catch (err) {
-				log(err.stack, logType.warning);
-			}
-		} else {
-			doNotDelete = false;
-			message.reply(':no_entry_sign: **NOPE:** What? You\'re not an administrator! Why would you be allowed to type that!?');
-			message.delete();
-		}
-	}
-}
-
+  }
 // END OF MESSAGE Function
 
 client.on('message', messageChecker);
@@ -1215,16 +308,6 @@ function sendCLIMessage(text) {
 		}
 	}
 }
-
-client.on('messageReactionAdd', function(reaction, user) {
-	log("Reaction " + reaction.emoji.name + " added by " + user.tag, logType.info)
-	if (reaction.message.channel.id == 325540027972976650) {
-		if (reaction.emoji.identifier == "Kappa:300124631522869248") {
-			reaction.message.channel.send("ok can you stop pushing my buttons mate")
-		}
-	}
-});
-
 
 client.on('guildMemberAdd', function(guildMember) {
 	if (guildMember.guild.id == 196793479899250688) {
@@ -1360,56 +443,6 @@ return;
 				}
 			});
 			return;
-		} else if (caughtSpam == true) {
-			caughtSpam = false;
-
-			channel = client.channels.get("229575537444651009");
-			channel.send({
-				embed: {
-					color: 14714691,
-					author: {
-						name: "ᴍᴇꜱꜱᴀɢᴇ ᴅᴇʟᴇᴛᴇᴅ »  " + message.author.tag,
-						icon_url: message.member.user.displayAvatarURL
-					},
-					description: ":wastebasket: Message by <@" + message.author.id + "> in <#" + message.channel.id + "> was removed.\n",
-					fields: [{
-							name: '**Message**',
-							value: message.cleanContent
-						},
-						{
-							name: '**Reason**',
-							value: "Duplicated words/letters.\n"
-						}
-					],
-					timestamp: new Date()
-				}
-			});
-			return;
-		} else if (caughtSwear == true) {
-			caughtSwear = false;
-
-			channel = client.channels.get("229575537444651009");
-			channel.send({
-				embed: {
-					color: 14714691,
-					author: {
-						name: "ᴍᴇꜱꜱᴀɢᴇ ᴅᴇʟᴇᴛᴇᴅ »  " + message.author.tag,
-						icon_url: message.member.user.displayAvatarURL
-					},
-					description: ":wastebasket: Message by <@" + message.author.id + "> in <#" + message.channel.id + "> was removed.\n",
-					fields: [{
-							name: '**Message**',
-							value: message.cleanContent
-						},
-						{
-							name: '**Reason**',
-							value: "Expletives found in message.\n"
-						}
-					],
-					timestamp: new Date()
-				}
-			});
-			return;
 		} else if (caughtLink == true) {
 			caughtLink = false;
 
@@ -1444,8 +477,6 @@ client.on('messageDeleteBulk', function(messages) {
 
 	if (panicMode[messages.first().guild.id])
 		return; //Don't want to be doing this in panic mode!
-	if (botDelMessage[messages.first().guild.id])
-		return;
 
 	//Debugging information.
 	if (maintenance == true) {
